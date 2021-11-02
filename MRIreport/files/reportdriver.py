@@ -4,14 +4,14 @@ import json
 import MRIReport
 from datetime import datetime
 
-# For local testng
+# For local testing
 os.environ["WORKFLOW_DIR"] = "/data"
 os.environ["BATCH_NAME"] = "batch"
 os.environ["OPERATOR_OUT_DIR"] = "output"
 os.environ["OPERATOR_IN_DCM_METADATA_DIR"] = "dcm2json"
-os.environ["OPERATOR_IN_DIR_BMASK"] = "deepmrseg-bmask"
+os.environ["OPERATOR_IN_DIR_BMASK"] = "None"
 os.environ["OPERATOR_IN_DIR_ICV"] = "None"
-os.environ["OPERATOR_IN_DIR_ROI"] = "None"
+os.environ["OPERATOR_IN_DIR_ROI"] = "deepmrseg-roi"
 
 # From the template
 batch_folders = sorted([f for f in glob.glob(os.path.join('/', os.environ['WORKFLOW_DIR'], os.environ['BATCH_NAME'], '*'))])
@@ -32,8 +32,9 @@ for batch_element_dir in batch_folders:
         icv_input_dir = os.path.join(batch_element_dir, os.environ['OPERATOR_IN_DIR_ICV'])
         icv = sorted(glob.glob(os.path.join(icv_input_dir, "*.nrrd*"), recursive=True))
     if "None" not in os.environ["OPERATOR_IN_DIR_ROI"]:
-        print("bmask folder provided")
+        print("roi folder provided")
         roi_input_dir = os.path.join(batch_element_dir, os.environ['OPERATOR_IN_DIR_ROI'])
+        print(roi_input_dir)
         roi = sorted(glob.glob(os.path.join(roi_input_dir, "*.nrrd*"), recursive=True))
 
     tmp_json = os.path.join(batch_element_dir, os.environ['OPERATOR_IN_DCM_METADATA_DIR'])

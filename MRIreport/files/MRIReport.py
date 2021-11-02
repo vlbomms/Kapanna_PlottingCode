@@ -25,8 +25,9 @@ from pygam import LinearGAM
 from IPython.display import HTML as idhtml
 from weasyprint import HTML as wp
 ### Constants (TODO: temporary)
-MUSE_ROI_Mapping = '/Users/vikaslbommineni/MRIreport/Ref_CSV/MUSE_DerivedROIs_Mappings.csv'
-MUSE_Ref_Values = '/Users/vikaslbommineni/MRIreport/Ref_CSV/RefStudy_MRVals.csv'
+MUSE_ROI_Mapping = '~/Ref_CSV/MUSE_DerivedROIs_Mappings.csv'
+MUSE_Ref_Values = '~/Ref_CSV/RefStudy_MRVals.csv'
+MUSE_ExtendedRef_Values = '~/Ref_CSV/RefStudy_MRVals_AllVals.csv'
 SEL_ROI = ['MUSE_Volume_702', 'MUSE_Volume_701', 'MUSE_Volume_601', 'MUSE_Volume_604', 'MUSE_Volume_509', 'MUSE_Volume_48', 'MUSE_Volume_47']
 SEL_ROI_Rename = ['MUSE_BrainMask', 'MUSE_TotalBrain', 'MUSE_GM', 'MUSE_WM', 'MUSE_VN', 'MUSE_HippoL', 'MUSE_HippoR']
 
@@ -34,7 +35,7 @@ SEL_ROI_Rename = ['MUSE_BrainMask', 'MUSE_TotalBrain', 'MUSE_GM', 'MUSE_WM', 'MU
 
 ############## HELP #############
 
-### Function to read demog info from json
+### Function to read demog. info from json
 def readSubjInfo(subjfile):
 	
 	if subjfile.endswith('.csv'):
@@ -84,6 +85,7 @@ def calcMaskVolume(maskfile):
 	
 	return maskVol
 
+
 ### Function to calculate derived ROI volumes for MUSE
 def calcRoiVolumes(maskfile, mapcsv):
 	
@@ -132,12 +134,12 @@ def calcRoiVolumes(maskfile, mapcsv):
 	all_MuseROIs =  dict(zip(DerivedROIs, DerivedVols))
 	dictr = {}
 	
-	### Extract the ROI we're interested in -- based on SEL_ROI
+	### Extract ONLY the ROI we're interested in -- based on SEL_ROI
 	for roi in SEL_ROI:
 		x = [i for i in roi.split('_') if i.isdigit()][0]
 		dictr[x] = all_MuseROIs[x]
 
-	return dictr
+	return dictr, all_MuseROIs
 
 ### Rewrite to get coplots!!!
 def plotWithRef(dfRef, dfSub, selVarlst, fname):
@@ -147,6 +149,7 @@ def plotWithRef(dfRef, dfSub, selVarlst, fname):
 	sl = False
 
 	for selVar in selVarlst:
+		## Only allow legend to show up for one of the plots (for display purpose)
 		if row == 1 & column == 1:
 			sl = True
 		else:
@@ -185,7 +188,7 @@ def plotWithRef(dfRef, dfSub, selVarlst, fname):
 		fig.append_trace( go.Scatter(mode='lines', x=XX, y=XX05, marker=dict(color='MediumPurple', size=10), name='5th percentile', showlegend=sl),row,column)
 		fig.append_trace( go.Scatter(mode='markers', x=dfSub.Age.tolist(), y=dfSub[selVar].tolist(),marker=dict(color='Red', size=16,line=dict( color='MediumPurple', width=2)), name='Patient', showlegend=sl),row,column)
 
-		## Allow nx2 structure of plots
+		## Allow iteration through nx2 structure of plots
 		if row == 1 & column == 1:
 			column += 1
 		elif column == 1:
@@ -194,14 +197,16 @@ def plotWithRef(dfRef, dfSub, selVarlst, fname):
 			row += 1
 			column -= 1
 
+	## Get Age underneath each plot
 	for i in range(1,len(selVarlst)+1):
 		fig['layout']['xaxis{}'.format(i)]['title']='Age'
 
-
+	## Set figure dimensions and save
 	fig.update_layout(margin_b=0,margin_l=0,margin_r=0,margin_t=17)
 	fig.write_image(fname, scale=1, width=550, height=550)
 	
 
+## Write the HTML code for display --- TODO: Move to seperate python file
 def writeHtml(plots, brainplot, tables, pattable, outName):
 	all_plot = ""
 	all_brainplot = ""
@@ -225,9 +230,9 @@ def writeHtml(plots, brainplot, tables, pattable, outName):
 		<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.1/css/bootstrap.min.css">
 		<style>
 			body { margin:0 100; #background:whitesmoke; }
-			.table td.toohigh { background: #ADD8E6 !important; color: white; }
-			.table td.toolow { background: #FFB6C1 !important; color: white; }
-			.table td.norm { background: white !important; color: white; }
+			.toohigh { background: #ADD8E6 !important; color: white; }
+			.toolow { background: #FFB6C1 !important; color: white; }
+			.norm { background: white !important; color: white; }
 			h6 { margin: 1em 0 0.5em 0 ! important; 
 				font-weight: normal ! important;
 				position: relative ! important;
@@ -241,6 +246,12 @@ def writeHtml(plots, brainplot, tables, pattable, outName):
 				box-shadow: inset 0 0 5px rgba(53,86,129, 0.5) ! important;
 				font-family: 'Muli', sans-serif ! important; 
 				}
+			.grouplabel {
+				background: blue;
+				color: yellow;
+				border: 1px solid blue;
+				border-radius: 5px;
+			}
 		</style>
 		
 	</head>
@@ -270,39 +281,59 @@ def writeHtml(plots, brainplot, tables, pattable, outName):
 	f.write(html_string_test)
 	f.close()
 
-def makeTables(dftable):
+def tagID(num):
+	if num > 95:
+		tag = "toohigh"
+	elif num <= 40:
+		tag = "toolow"
+	else:
+		tag = "norm"
+
+	return tag
+
+## Create table with volume values + percentiles; TODO: add mechanic for subtables
+def makeTables(dftable, subtables, superstruct_ID):
 	all_entries = ""
+	
 	for index, rows in dftable.iterrows():
-		if rows["Normative Percentile"] > 95:
-			tag = "toohigh"
-		elif rows["Normative Percentile"] <= 5:
-			tag = "toolow"
-		else:
-			tag = "norm"
+		tbody = ""
+		# Access dictionary with subTable information!!!
+		try:
+			tbody = '''<tr style="text-align: center;"><td><b><u>''' + rows["Brain Structure"] + '''</u></b></th><td>''' + rows["Volume"] + '''</td><td class=''' + tagID(rows["Normative Percentile"]) + '''>''' + str(rows["Normative Percentile"]) + '''</td></tr>'''
+			for index_sub, rows_sub in subtables[superstruct_ID[rows["Brain Structure"]]].iterrows():
+				tbody = tbody + '''<tr style="text-align: center;">
+				<td scope="col"><i>''' + str(rows_sub["Brain Structure"]) + '''</i></td>
+				<td scope="col"><i>''' + str(rows_sub["Volume"]) + '''</i></td>
+				<td class=''' + tagID(rows_sub["Normative Percentile"]) + '''><i>''' + str(rows_sub["Normative Percentile"]) + '''</i></td>
+				</tr>'''
 
-		all_entries = all_entries + '''<tr>
-      	<td>''' + str(rows["Brain Structure"]) + '''</td>
-      	<td>''' + str(rows["Volume"]) + '''</td>
-      	<td class=''' + tag + '''>''' + str(rows["Normative Percentile"]) + '''</td>
-    	</tr>'''
+			all_entries = all_entries + '''<tbody id=''' + "section" + str(index) + '''; class="grouplabel">''' + tbody + '''</tbody>'''
 
-	string = '''
-	<table class="table table-striped">
-  	<thead>
-    	<tr style="text-align: center;">
-      		<th scope="col">Brain Structure</th>
-      		<th scope="col">Volume</th>
-      		<th scope="col">Normative Percentile</th>
-   		</tr>
-  	</thead>
-  	<tbody>
-    	''' + all_entries + '''
-  	</tbody>
+		except:
+			tbody = ""
+			tbody = tbody + '''<tr style="text-align: center;">
+				<td scope="col">''' + str(rows["Brain Structure"]) + '''</td>
+				<td scope="col">''' + str(rows["Volume"]) + '''</td>
+				<td class=''' + tagID(rows["Normative Percentile"]) + '''>''' + str(rows["Normative Percentile"]) + '''</td>
+				</tr>'''
+
+			all_entries = all_entries + '''<tbody id=''' + "section" + str(index) + '''>''' + tbody + '''</tbody>'''
+
+	string = '''<table>
+  		<thead>
+    		<tr style="text-align: center;">
+      			<th scope="col">Brain Structure</th>
+      			<th scope="col">Volume</th>
+      			<th scope="col">Normative Percentile</th>
+   			</tr>
+  		</thead>
+		''' + all_entries + '''
 	</table>'''
 
+	###TODO: Change above code to accomodate sub-DataFrames containing substructures; https://stackoverflow.com/a/49458729 <<- example on how to do so
 	return string
 
-# Need age plot to go under the first div to assure continuity
+## Make patient, site, and report information tables
 def makeIntroTables(dftable):
 	string = '''
 	<div class="col-xs-4">
@@ -330,6 +361,50 @@ def makeIntroTables(dftable):
 
 	return string
 
+
+## Get center of brain mask for dislay purposes; TODO: Move to seperate python file
+def getcropinfo(img_arr):
+	## finding a 3D bounding box
+	x_len,y_len,z_len = img_arr.shape
+
+	for x in range(x_len):
+		if np.sum(img_arr[x,:,:]) > 0:
+			x_min = x
+			break
+
+	for x in range(1, x_len):
+		if np.sum(img_arr[(x_len-x),:,:]) > 0:
+			x_max = x_len-x
+			break
+
+	for y in range(y_len):
+		if np.sum(img_arr[:,y,:]) > 0:
+			y_min = y
+			break
+
+	for y in range(1, y_len):
+		if np.sum(img_arr[:,(y_len-y),:]) > 0:
+			y_max = y_len-y
+			break
+
+	for z in range(z_len):
+		if np.sum(img_arr[:,:,z]) > 0:
+			z_min = z
+			break
+
+	for z in range(1, z_len):
+		if np.sum(img_arr[:,:,(z_len-z)]) > 0:
+			z_max = z_len-z
+			break
+
+	x_center = int(np.mean((x_min, x_max)))
+	y_center = int(np.mean((y_min, y_max)))
+	z_center = int(np.mean((z_min, z_max)))
+
+	return x_center, y_center, z_center
+
+
+## Create visualization of the brain structures
 def generateBrainVisual(maskfile, fname):
 	### Check input mask
 	if not maskfile:
@@ -341,28 +416,34 @@ def generateBrainVisual(maskfile, fname):
 	roiimg = nrrd.read(maskfile)[0]
 	#roiimg = np.rot90(roiimg)
 
-	x_slice = np.rot90(roiimg[round(roiimg.shape[0]/2), :, :])
-	y_slice = np.rot90(roiimg[:, round(roiimg.shape[1]/2), :])
-	z_slice = np.rot90(roiimg[:, :, round(roiimg.shape[2]/2)])
+	x_center,y_center,z_center = getcropinfo(roiimg)
+	x_slice = np.rot90(roiimg[x_center, :, :])
+	y_slice = np.rot90(roiimg[:, y_center, :])
+	z_slice = np.rot90(roiimg[:, :, z_center])
 
-	fig, ax = plt.subplots(1, 3, figsize=[15, 5])
+	display_slices = [x_slice,y_slice,z_slice]
+
+	fig, ax = plt.subplots(1, 3, figsize=[18, 3])
 
 	##Color and display settings
-	ax[0].imshow(x_slice, 'RdBu_r')
-	ax[1].imshow(y_slice, 'RdBu_r')
-	ax[2].imshow(z_slice, 'RdBu_r')
-	ax[0].set_xticks([])
-	ax[0].set_yticks([])
-	ax[1].set_xticks([])
-	ax[1].set_yticks([])
-	ax[2].set_xticks([])
-	ax[2].set_yticks([])
+	for i in range(3):
+		ax[i].imshow(display_slices[i], 'RdBu_r')
+		ax[i].set_xticks([])
+		ax[i].set_yticks([])
 
 	fig.subplots_adjust(wspace=0, hspace=0)
 
 	## Save to file
 	#figure.set_size_inches(6, 6)
 	plt.savefig(fname)
+
+## TODO: Get out of using this redundant function
+def indextoname(num):
+	index = [idx for idx, s in enumerate(SEL_ROI) if str(num) in s][0]
+
+	return SEL_ROI_Rename[index]
+
+
 
 ################################################ END OF FUNCTIONS ################################################
 	
@@ -373,6 +454,7 @@ def _main(bmask, roi, icv , _json, pdf_path):
 	##########################################################################
 	##### Read reference ROI values
 	dfRef = pd.read_csv(MUSE_Ref_Values).dropna()
+	dfRefExtended = pd.read_csv(MUSE_ExtendedRef_Values).dropna()
 
 	##########################################################################
 	##### Read subject data (demog and MRI)
@@ -397,8 +479,9 @@ def _main(bmask, roi, icv , _json, pdf_path):
 	dfPat.loc[4] = datetime.today().strftime('%Y-%m-%d')
 
 	####################################3
-	## Read MRI values
-	tmpOut_brainplt = '/Users/vikaslbommineni/MRIreport/tmpfolder/' + _os.path.basename(pdf_path.removesuffix(".pdf") + '_brainplot.png')	
+
+	## Path where we'll save the brain structure images to be displayed
+	tmpOut_brainplt = '~/tmpfolder/' + _os.path.basename(pdf_path.removesuffix(".pdf") + '_brainplot.png')	
 
 	## Read bmask, if provided
 	bmaskVol = None
@@ -418,7 +501,7 @@ def _main(bmask, roi, icv , _json, pdf_path):
 	roiVols = None
 	if len(roi) == 1:
 		generateBrainVisual(roi[0], tmpOut_brainplt)
-		roiVols = calcRoiVolumes(roi[0], MUSE_ROI_Mapping)
+		roiVols, FullMuseDict = calcRoiVolumes(roi[0], MUSE_ROI_Mapping)
 		for tmpRoi in SEL_ROI:
 			if tmpRoi.replace('MUSE_Volume_','') in roiVols:
 				dfSub.loc[0, tmpRoi] = roiVols[tmpRoi.replace('MUSE_Volume_','')]
@@ -429,7 +512,7 @@ def _main(bmask, roi, icv , _json, pdf_path):
 	dfRef = dfRef.rename(columns=dictMUSE)
 	dfSub = dfSub.rename(columns=dictMUSE)
 
-	# Make column for WM + GM
+	# Make column for WM + GM; as well as any future summed values
 	dfSub["MUSE_GM&WM"] = pd.to_numeric(dfSub["MUSE_WM"]) + pd.to_numeric(dfSub["MUSE_GM"])
 	dfRef["MUSE_GM&WM"] = pd.to_numeric(dfRef["MUSE_WM"]) + pd.to_numeric(dfRef["MUSE_GM"])
 
@@ -450,10 +533,18 @@ def _main(bmask, roi, icv , _json, pdf_path):
 	# dfSubTmp = dfSubTmp.add_suffix('_ICVCorr')
 	# dfSub = pd.concat([dfSub, dfSubTmp], axis=1)
 
+	### Create an extended version of reference values
 	## Select only subjects with the same sex
 	dfRef = dfRef[dfRef.Sex == subDict['Sex']]
+	dfRefExtended["ID"] = dfRefExtended["ID"].astype(str).str[4:].astype(int)
+	all_subj = list(set(dfRefExtended.ID.values).intersection(dfRef.MRID.values))
+	###Create the extended reference value dataframe
+	dfRefExtended = dfRefExtended[dfRefExtended["ID"].isin(all_subj)]
+	dfRef = dfRef[dfRef["MRID"].isin(all_subj)]
+	dfRefExtended["Age"] = dfRef["Age"].values
 
 	##########################################################################
+	
 	##### Create plots and tables
 
 	plots = []
@@ -461,50 +552,80 @@ def _main(bmask, roi, icv , _json, pdf_path):
 	imgs = []
 	tables = []
 	trial_set = []
+	subtables = {}
+	substruct_name = {}
+	superstruct_ID = {}
 	
-	## Setup dataframe to store numeric details on ROIs
+	## Setup dataframe to store numeric details on ROIs; need to run tmpTable for each of the substructures (one table for each overarching)
 	tmpTable = pd.DataFrame(columns=["Brain Structure", "Volume", "Normative Percentile"])
 
-	### Plot icv volume
+	## purpose: build reference dict for substructure names
+	with open(MUSE_ROI_Mapping) as mapcsvfile:
+		reader = _csv.reader(mapcsvfile, delimiter=',')
+		for row in reader:
+			substruct_name[row[0]] = row[1]
+
+
+	## Create dict of substructure tables
+	for i in roiVols:
+		if i == "702" or i == "701" or i == "601" or i == "604":
+			continue
+		with open(MUSE_ROI_Mapping) as mapcsvfile:
+			reader = _csv.reader(mapcsvfile, delimiter=',')
+			# Read each line in the csv map files
+			for ind, row in enumerate(reader):
+				if row[0] == i and len(row[2:]) > 1:
+					tmp_struct_table = pd.DataFrame(columns=["Brain Structure", "Volume", "Normative Percentile"])
+					for j in row[2:]:
+						tmp_struct_table.loc[len(tmp_struct_table.index)] = [substruct_name[j], str(int(FullMuseDict[j])), round(stats.percentileofscore(dfRefExtended[dfRefExtended.Age == subDict['Age']][j].values, FullMuseDict[j], kind='rank'))]
+
+					subtables[row[0]] = tmp_struct_table
+					## Have to do this b/c zipping conversion earlier btwn name and #
+					superstruct_ID[indextoname(row[0])] = row[0]
+
+	### Get icv volume into a table
 	if len(icv) == 1:
 		trial_set.append('DLICV')
 		tmpTable.loc[len(tmpTable.index)] = ['DLICV', str(int(dfSub['DLICV'].values[0])), round(stats.percentileofscore(dfRef[dfRef.Age == subDict['Age']]['DLICV'].values, dfSub['DLICV'].values[0], kind='rank'))]
 
-	### Plot bmask volume
+	### Get bmask volume into a table
 	if len(bmask) == 1:
 		trial_set.append('MUSE_BrainMask')
 		tmpTable.loc[len(tmpTable.index)] = ['MUSE_BrainMask', str(int(dfSub['MUSE_BrainMask'].values[0])), round(stats.percentileofscore(dfRef[dfRef.Age == subDict['Age']]['MUSE_BrainMask'].values, dfSub['MUSE_BrainMask'].values[0], kind='rank'))]
 
-	## Extract all important ROI labels for presentation
+	## Extract all important ROI labels into a list
 	ind = list(dfSub.columns).index("Sex")
 	trial_set = trial_set + list(dfSub.columns[(ind+1):])
 
-	## Plot roi volume
+	## Get roi volume into a table
 	if len(roi) == 1:
 		for i in trial_set:
 			tmpTable.loc[len(tmpTable.index)] = [i, str(int(dfSub[i].values[0])), round(stats.percentileofscore(dfRef[dfRef.Age == subDict['Age']][i].values, dfSub[i].values[0], kind='rank'))]
 
-	tmpOut = '/Users/vikaslbommineni/MRIreport/tmpfolder/' + _os.path.basename(pdf_path.removesuffix(".pdf") + '_plot.png')
+	tmpOut = '~/tmpfolder/' + _os.path.basename(pdf_path.removesuffix(".pdf") + '_plot.png')
 	plotWithRef(dfRef, dfSub, trial_set, tmpOut)
 	plots.append(_os.path.basename(tmpOut))
 	brainplot.append(_os.path.basename(tmpOut_brainplt))
 	imgs.append(tmpOut)
 	imgs.append(tmpOut_brainplt)
 
-	tables = [makeTables(tmpTable)]
+	## Create brain volume table (in HTML)
+	tables = [makeTables(tmpTable, subtables, superstruct_ID)]
 
 	### Create patient overall biodata table (in HTML)
 	tmpPatTable = makeIntroTables(dfPat)
 
-	html_out = '/Users/vikaslbommineni/MRIreport/tmpfolder/' + _os.path.basename(pdf_path.removesuffix("pdf") + "html")
+	html_out = '~/tmpfolder/' + _os.path.basename(pdf_path.removesuffix("pdf") + "html")
 	writeHtml(plots, brainplot, tables, tmpPatTable, html_out)
 	print('\nTemp html file created: ' + html_out)
 	## Convert html to pdf file
 	wp(html_out).write_pdf(pdf_path)
 	print('\nPDF plot file created: ' + pdf_path)
-	## Remove html
+
+	## Remove temp html files
 	_os.remove(html_out)
-	## Remove all plot images
+
+	## Remove all temp plot images
 	for i in imgs:
 		_os.remove(i)
 
