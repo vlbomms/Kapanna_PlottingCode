@@ -3,8 +3,6 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib
-from matplotlib.transforms import Bbox
-from matplotlib.patches import Rectangle
 from numpy.ma import masked_array
 import csv as _csv
 import os as _os
@@ -32,6 +30,7 @@ from weasyprint import HTML as wp
 
 # Script to calculate spare AD score for our test subject
 from spareAD import calculateSpareAD, createSpareADplot
+from spareBA import calculateSpareBA, createSpareBAplot
 
 # Script to create cmap
 from createcmap import get_continuous_cmap
@@ -64,7 +63,13 @@ def readSubjInfo(subjfile):
 			## This part is based on assumptions on dicom field names
 			## it should be tested carefully and updated for different patterns
 			subID = [value for key, value in data.items() if 'PatientID' in key][0]
-			subAge = float([value for key, value in data.items() if 'PatientAge' in key][0].replace('Y',''))
+			
+			for key, value in data.items():
+				if ('PatientAge' in key) and ('Y' in str(value)):
+					print("Successfully identified patient age in JSON...")
+					subAge = float(str(value).replace('Y',''))
+					break
+
 			subSex = [value for key, value in data.items() if 'PatientSex' in key][0]
 			subExamDate = [value for key, value in data.items() if 'StudyDate_date' in key][0]
 			subExamDate = datetime.strptime(subExamDate, "%Y-%m-%d").strftime("%m/%d/%Y")
@@ -152,10 +157,10 @@ def calcRoiVolumes(maskfile, mapcsv, dfRef, subDict):
 
 	#### Correct ref values temporarily for age + gender controlled z-score calculation ####
 	nonROI = list(dfRef.columns[dfRef.columns.str.contains('AI')].values)
-	nonROI.extend(['MRID','Study','PTID','Age','Sex','Diagnosis_nearest_2.0','SITE','Date','ICV','SPARE_AD'])
+	nonROI.extend(['MRID','Study','PTID','Age','Sex','Diagnosis_nearest_2.0','SITE','Date','ICV','SPARE_AD','SPARE_BA'])
 	dfRefTmp = dfRef.copy(deep=True)
 	# Rename 702 to ICV
-	dfRefTmp.rename(columns={'702':'ICV'}, inplace=True)	
+	dfRefTmp.rename(columns={'702':'ICV'}, inplace=True)
 
 	# Get precise age and sex references only
 	dfRefTmp = dfRefTmp[dfRefTmp.Sex == subDict['Sex']]
@@ -262,11 +267,11 @@ def calcRoiVolumes(maskfile, mapcsv, dfRef, subDict):
 
 	return dictr, dfRef, allz, allz_num, all_MuseROIs, all_MuseROIs_name
 
-def plotWithRef(dfRef, dfSub, selVarlst, fname, spareAD):
+def plotWithRef(dfRef, dfSub, selVarlst, fname, spareAD, spareBA):
 	selVarlst.append("SPARE_AD")
+	selVarlst.append("SPARE_BA")
 	## TODO: make specs arg. automatically adjusted to number of plots
-	fig = py.subplots.make_subplots(rows=round(len(selVarlst)/3)+1,cols=3,subplot_titles=selVarlst, 
-		specs=[[{}, {}, {}], [{}, {}, {}], [{"colspan": 2}, None, None]], vertical_spacing = 0.09)
+	fig = py.subplots.make_subplots(rows=3,cols=3,subplot_titles=selVarlst,specs=[[{}, {}, {}], [{}, {}, {}], [{}, {}, None]],vertical_spacing = 0.05,horizontal_spacing = 0.03)
 	row = 1
 	column = 1
 	sl = False
@@ -276,12 +281,10 @@ def plotWithRef(dfRef, dfSub, selVarlst, fname, spareAD):
 	lowlim = int(dfSub.Age.values[0]) - 5
 	uplim = int(dfSub.Age.values[0]) + 5
 
-	limRef = dfRef.loc[(dfRef['Age'] >= lowlim) & (dfRef['Age'] <= uplim)]
-	ADRef = limRef.loc[limRef['Diagnosis_nearest_2.0'] == 'AD']
-
+	ADRef = dfRef.loc[dfRef['Diagnosis_nearest_2.0'] == 'AD']
 	CNRef = dfRef.loc[dfRef['Diagnosis_nearest_2.0'] == 'CN']
 
-	for selVar in selVarlst[:-1]:
+	for selVar in selVarlst[:-2]:
 		## Only allow legend to show up for one of the plots (for display purposes)
 		if mark:
 			sl = True
@@ -289,39 +292,56 @@ def plotWithRef(dfRef, dfSub, selVarlst, fname, spareAD):
 		else:
 			sl = False
 
-		X = CNRef.Age.values.reshape([-1,1])
-		y = CNRef[selVar].values.reshape([-1,1])
+		X_CN = CNRef.Age.values.reshape([-1,1])
+		y_CN = CNRef[selVar].values.reshape([-1,1])
+
+		X_AD = ADRef.Age.values.reshape([-1,1])
+		y_AD = ADRef[selVar].values.reshape([-1,1])
 
 		##############################################################
-		## Fit expectiles
+		########### CN values ###########
 		# fit the mean model first by CV
-		gam50 = ExpectileGAM(expectile=0.5).gridsearch(X, y)
+		gam50 = ExpectileGAM(expectile=0.5).gridsearch(X_CN, y_CN)
 
 		# and copy the smoothing to the other models
 		lam = gam50.lam
 
 		# fit a few more models
-		gam90 = ExpectileGAM(expectile=0.90, lam=lam).fit(X, y)
-		gam75 = ExpectileGAM(expectile=0.75, lam=lam).fit(X, y)
-		gam25 = ExpectileGAM(expectile=0.25, lam=lam).fit(X, y)
-		gam05 = ExpectileGAM(expectile=0.05, lam=lam).fit(X, y)
+		gam90 = ExpectileGAM(expectile=0.90, lam=lam).fit(X_CN, y_CN)
+		gam10 = ExpectileGAM(expectile=0.10, lam=lam).fit(X_CN, y_CN)
 	
-		XX = gam50.generate_X_grid(term=0, n=100)
-		XX90 = list(gam90.predict(XX).flatten())
-		XX75 = list(gam75.predict(XX).flatten())
-		XX50 = list(gam50.predict(XX).flatten())
-		XX25 = list(gam25.predict(XX).flatten())
-		XX05 = list(gam05.predict(XX).flatten())
-		XX = list(XX.flatten())
+		XX_CN = gam50.generate_X_grid(term=0, n=100)
+		XX90_CN = list(gam90.predict(XX_CN).flatten())
+		XX50_CN = list(gam50.predict(XX_CN).flatten())
+		XX10_CN = list(gam10.predict(XX_CN).flatten())
+		XX_CN = list(XX_CN.flatten())
 
-		fig.append_trace( go.Scatter(mode='markers', x=ADRef.Age.tolist(), y=ADRef[selVar].tolist(), marker=dict(color='MediumVioletRed', size=5), opacity=0.2, name='AD Reference', showlegend=sl),row,column)
-		fig.append_trace( go.Scatter(mode='markers', x=CNRef.Age.tolist(), y=CNRef[selVar].tolist(), marker=dict(color='MediumBlue', size=5), opacity=0.2, name='CN Reference', showlegend=sl),row,column)
-		fig.append_trace( go.Scatter(mode='lines', x=XX, y=XX90, marker=dict(color='MediumPurple', size=10), name='90th percentile', showlegend=sl),row,column)
-		fig.append_trace( go.Scatter(mode='lines', x=XX, y=XX75, marker=dict(color='Orchid', size=10), name='75th percentile', showlegend=sl),row,column)
-		fig.append_trace( go.Scatter(mode='lines', x=XX, y=XX50, marker=dict(color='MediumVioletRed', size=10), name='50th percentile', showlegend=sl),row,column)
-		fig.append_trace( go.Scatter(mode='lines', x=XX, y=XX25, marker=dict(color='Orchid', size=10), name='25th percentile', showlegend=sl),row,column)
-		fig.append_trace( go.Scatter(mode='lines', x=XX, y=XX05, marker=dict(color='MediumPurple', size=10), name='5th percentile', showlegend=sl),row,column)
-		fig.append_trace( go.Scatter(mode='markers', x=dfSub.Age.tolist(), y=dfSub[selVar].tolist(),marker=dict(color='Red', symbol = 'circle-cross-open', size=16,line=dict(color='MediumPurple', width=3)), name='Patient', showlegend=sl),row,column)
+		########### AD values ###########
+		# fit the mean model first by CV
+		gam50 = ExpectileGAM(expectile=0.5).gridsearch(X_AD, y_AD)
+
+		# and copy the smoothing to the other models
+		lam = gam50.lam
+
+		# fit a few more models
+		gam90 = ExpectileGAM(expectile=0.90, lam=lam).fit(X_AD, y_AD)
+		gam10 = ExpectileGAM(expectile=0.10, lam=lam).fit(X_AD, y_AD)
+	
+		XX_AD = gam50.generate_X_grid(term=0, n=100)
+		XX90_AD = list(gam90.predict(XX_AD).flatten())
+		XX50_AD = list(gam50.predict(XX_AD).flatten())
+		XX10_AD = list(gam10.predict(XX_AD).flatten())
+		XX_AD = list(XX_AD.flatten())
+
+		fig.append_trace( go.Scatter(mode='markers', x=ADRef.Age.tolist(), y=ADRef[selVar].tolist(), legendgroup='AD', marker=dict(color='MediumVioletRed', size=5), opacity=0.2, name='AD Reference', showlegend=sl),row,column)
+		fig.append_trace( go.Scatter(mode='markers', x=CNRef.Age.tolist(), y=CNRef[selVar].tolist(), legendgroup='CN', marker=dict(color='MediumBlue', size=5), opacity=0.2, name='CN Reference', showlegend=sl),row,column)
+		fig.append_trace( go.Scatter(mode='lines', x=XX_CN, y=XX90_CN, legendgroup='CN', marker=dict(color='MediumPurple', size=10), name='90th percentile for CN', showlegend=sl),row,column)
+		fig.append_trace( go.Scatter(mode='lines', x=XX_CN, y=XX50_CN, legendgroup='CN', marker=dict(color='MediumVioletRed', size=10), name='50th percentile for CN', showlegend=sl),row,column)
+		fig.append_trace( go.Scatter(mode='lines', x=XX_CN, y=XX10_CN, legendgroup='CN', marker=dict(color='MediumBlue', size=10), name='10th percentile for CN', showlegend=sl),row,column)
+		fig.append_trace( go.Scatter(mode='lines', x=XX_AD, y=XX90_AD, legendgroup='AD', marker=dict(color='MediumPurple', size=10), name='90th percentile for AD', line=dict(dash = 'dash'), showlegend=sl),row,column)
+		fig.append_trace( go.Scatter(mode='lines', x=XX_AD, y=XX50_AD, legendgroup='AD', marker=dict(color='MediumVioletRed', size=10), name='50th percentile for AD', line=dict(dash = 'dash'), showlegend=sl),row,column)
+		fig.append_trace( go.Scatter(mode='lines', x=XX_AD, y=XX10_AD, legendgroup='AD', marker=dict(color='MediumBlue', size=10), name='10th percentile for AD', line=dict(dash = 'dash'), showlegend=sl),row,column)
+		fig.append_trace( go.Scatter(mode='markers', x=dfSub.Age.tolist(), y=dfSub[selVar].tolist(), legendgroup='Patient', marker=dict(color='Black', symbol = 'circle-cross-open', size=16,line=dict(color='MediumPurple', width=3)), name='Patient', showlegend=sl),row,column)
 
 		fig.update_xaxes(range=[lowlim, uplim])	
 
@@ -336,7 +356,8 @@ def plotWithRef(dfRef, dfSub, selVarlst, fname, spareAD):
 	#for i in range(1,len(selVarlst)+1):
 	#	fig['layout']['xaxis{}'.format(i)]['title']='Age'
 
-	createSpareADplot(spareAD, dfSub, fig, round(len(selVarlst)/3)+1, fname)
+	fig = createSpareADplot(spareAD, dfSub, fig, 3, fname)
+	createSpareBAplot(spareBA, dfSub, fig, 3, fname)
 	
 ## Write the HTML code for display --- TODO: Move to seperate python file
 def writeHtml(plots, tables, flagtable, dftable, outName, brainplot):
@@ -353,7 +374,7 @@ def writeHtml(plots, tables, flagtable, dftable, outName, brainplot):
 		ind = '' + table + ''
 		all_table = all_table + ind
 	for plot in brainplot:
-		ind = '''<img src=''' + plot + '''></img>'''
+		ind = '''<img src=''' + plot + ''' class="center"></img>'''
 		all_brainplot = all_brainplot + ind
 	for table in flagtable:
 		ind = '' + table + ''
@@ -382,12 +403,6 @@ def writeHtml(plots, tables, flagtable, dftable, outName, brainplot):
 				box-shadow: inset 0 0 5px rgba(53,86,129, 0.5) ! important;
 				font-family: 'Muli', sans-serif ! important; 
 				}
-			.grouplabel {
-				background: blue;
-				color: yellow;
-				border: 1px solid blue;
-				border-radius: 5px;
-			}
 		</style>
 		<style type="text/css">
 			@page { margin: 45px 0px; }
@@ -411,7 +426,10 @@ def writeHtml(plots, tables, flagtable, dftable, outName, brainplot):
   			}
   			.footer{
   			position: fixed;
-  			bottom: 0;
+  			left: 5px;
+  			right: 5px;
+  			bottom: -32px;
+  			height: 30px;
   			}
   			.p{
   			text-align: center ! important;
@@ -419,6 +437,11 @@ def writeHtml(plots, tables, flagtable, dftable, outName, brainplot):
 			margin-top:10px ! important;
 			margin-left:30px ! important
 			font-size: 10px ! important;
+  			}
+  			.center {
+  			display: block;
+  			margin-left: auto;
+  			margin-right: auto;
   			}
 		</style>
 		<style>
@@ -451,6 +474,10 @@ def writeHtml(plots, tables, flagtable, dftable, outName, brainplot):
 			''' + all_plot + '''
 		</div>
 		<div class="container">
+			<h6>Brain structures: </h6>
+			''' + all_brainplot + '''
+		</div>
+		<div class="container">
 			<h6>Brain structure volumes: </h6>
 			''' + all_table + '''
 		</div>
@@ -458,9 +485,8 @@ def writeHtml(plots, tables, flagtable, dftable, outName, brainplot):
 			<h6>Flagged volumes: </h6>
 			''' + all_flag + '''
 		</div>
-		<div class="container">
-			<h6>Brain structures: </h6>
-			''' + all_brainplot + '''
+		<div class="footer">
+			<p>Note: These measurements may be useful as an adjunct to other diagnostic evaluations and the broader clinical context. Measurements do not diagnose a specific underlying disease in isolation.</p>
 		</div>
 	</body>
 	</html>'''
@@ -489,7 +515,7 @@ def makeTables(dftable):
 	
 	for index, rows in dftable.iterrows():
 		tbody = ""
-		tbody = '''<tr style="text-align: center;"><td><b>''' + rows["Brain Region"] + '''</b></td><td>''' + rows["Volume (cubic mL)"] + '''</td>''' + '''<b><td>''' + rows["R"] + '''</b></td><td class=''' + tagID(rows["R-Z score"]) + '''>''' + str(rows["R-Z score"]) + '''</td><b><td>''' + rows["L"] + '''</b></td><td class=''' + tagID(rows["L-Z score"]) + '''>''' + str(rows["L-Z score"]) + '''</td><b><td>''' + rows["Asymmetry Index (AI)"] + '''</b></td><td class=''' + tagID(rows["AI-Z score"]) + '''>''' + str(rows["AI-Z score"]) + '''</td></tr>'''#'''</td><td class=''' + tagID(rows["Total normative percentile"]) + '''>''' + str(rows["Total normative percentile"]) +'''</td></tr>'''
+		tbody = '''<tr style="text-align: center;"><td><b>''' + rows["Brain Region"] + '''</b></td><td>''' + rows["Volume (cubic mL)"] + '''</td>''' + '''<b><td>''' + rows["R"] + '''</b></td><td class=''' + tagID(rows["R-Z score"]) + '''>''' + str(rows["R-Z score"]) + '''</td><b><td>''' + rows["L"] + '''</b></td><td class=''' + tagID(rows["L-Z score"]) + '''>''' + str(rows["L-Z score"]) + '''</td><b><td>''' + rows["Asymmetry Index (AI)"] + '''</b></td><td class=''' + tagID(rows["AI-Z score"]) + '''>''' + str(rows["AI-Z score"]) + '''</td></tr>'''
 		all_entries = all_entries + '''<tbody id=''' + "section" + str(index) + '''>''' + tbody + '''</tbody>'''
 
 	string = '''<table border=1 frame=void rules=rows>
@@ -522,14 +548,16 @@ def makeFlagTable(mydict, MUSErois):
 
 	for index, key in enumerate(my_keys):
 		tbody = ""
-		tbody = '''<tr style="text-align: center;"><td>''' + key + '''</td><td>''' + str(round(MUSErois[key]/1000,2)) + '''</td><td class=''' + tagID(mydict[key]) + '''>''' + str(round(mydict[key],2)) + '''</td></tr>'''
+		lobe = list(maphemi.loc[(maphemi['ROI_NAME'] == str(key)), 'SUBGROUP_0'].values)[0]
+		tbody = '''<tr style="text-align: center;"><td><b>''' + key + '''</b></td><td style="font-weight:normal">''' + str(lobe) + '''</td>''' + '''<b><td style="font-weight:normal">''' + str(round(MUSErois[key]/1000,2)) + '''</b></td><td class=''' + tagID(mydict[key]) + ''' style="font-weight:normal">''' + str(round(mydict[key],2)) + '''</td></tr>'''
 		all_entries = all_entries + '''<tbody id=''' + "section" + str(index) + '''>''' + tbody + '''</tbody>'''
 
 	string = '''<table border=1 frame=void rules=rows>
 		<thead>
 			<tr style="text-align: center;">
       			<th scope="col">Brain Region</th>
-      			<th scope="col">Volume</th>
+      			<th scope="col">Lobar Region</th>
+      			<th scope="col">Volume (mL<sup>3</sup>)</th>
       			<th scope="col">Z score</th>
    			</tr>
   		</thead>
@@ -537,65 +565,6 @@ def makeFlagTable(mydict, MUSErois):
 	</table>'''
 
 	return string
-
-"""## Get center of brain mask for dislay purposes; TODO: Move to seperate python file
-def getcropinfo(img_arr):
-	## Get mid-sagittal slice
-	x_len,y_len,z_len = img_arr.shape
-	x_min = 0
-	x_max = 0
-	y_min = 0
-	y_max = 0
-	z_min = 0
-	z_max = 0
-
-	for z in range(z_len):
-		if np.sum(img_arr[:,:,z]) > 0:
-			z_min = z
-			break
-
-	for z in range(1, z_len):
-		if np.sum(img_arr[:,:,(z_len-z)]) > 0:
-			z_max = z_len-z
-			break
-
-	### Get coronal slice through both hippocampi heads ###
-	# Get middle of hippocampi
-	hip = (img_arr == 47).astype(int)
-
-	for x in range(x_len):
-		if np.sum(hip[x,:,:]) > 0:
-			x_min = x
-			break
-
-	for x in range(1, x_len):
-		if np.sum(hip[(x_len-x),:,:]) > 0:
-			x_max = x_len-x
-			break
-
-	### Get axial slice through both lateral ventricles ###
-	# Get middle of lateral ventricle
-	lv = (img_arr == 51).astype(int)
-
-	for y in range(y_len):
-		if np.sum(lv[:,y,:]) > 0:
-			y_min = y
-			break
-
-	for y in range(1, y_len):
-		if np.sum(lv[:,(y_len-y),:]) > 0:
-			y_max = y_len-y
-			break
-
-	x_c = int(np.mean((x_min, x_max)))
-	y_c = int(np.mean((y_min, y_max)))
-	z_c = int(np.mean((z_min, z_max)))
-
-	x_slice = img_arr[x_c,:,:]
-	y_slice = img_arr[:, y_c, :]
-	z_slice = np.rot90(img_arr[:, :, z_c],-1)
-
-	return x_slice,y_slice,z_slice"""
 
 #Method to get 6 axial views requested by Ilya / display these slices
 def getcropinfo(img_arr):
@@ -629,7 +598,7 @@ def getcropinfo(img_arr):
 			slice1 = img_arr[:, y_min, :]
 			break
 
-	# Get four other slices roughly equidistant between these two defined slices;=
+	# Get four other slices roughly equidistant between these two defined slices;
 	if (y_max - y_min) % 5 == 0:
 		slice2 = img_arr[:, int(y_min + (y_max - y_min)/5), :]
 		slice3 = img_arr[:, int(y_min + 2*(y_max - y_min)/5), :]
@@ -685,13 +654,13 @@ def generateBrainVisual(maskfile, allz, fname):
 				y_max = dim2-y
 				break
 
-		display_slicestmp[i] = sli[(x_min-4):(x_max+4),(y_min-4):(y_max+4)]
+		display_slicestmp[i] = sli[(x_min-15):(x_max+15),(y_min-15):(y_max+15)]
 
 	#TODO: create different arrays of same size to allow data array to preserve original values
 	## We only modify the zero arrays
 	my_keys = sorted(allz, key=allz.get, reverse=False)
 
-	fig, ax = plt.subplots(2, 3, figsize=(8, 4.4), constrained_layout = True)
+	fig, ax = plt.subplots(2, 3, figsize=(6, 3.1), constrained_layout = True)
 
 	for i in range(6):
 		display_slicestmp[i] = np.array(display_slicestmp[i])
@@ -733,7 +702,7 @@ def generateBrainVisual(maskfile, allz, fname):
 			a = 1
 			b = 2
 
-		hex_list = ['#ff0000','#ff4e00','#ff7100','#ff8d00','#ffa600','#ffbe00','#ffd400','#ffea00','#ffff00']
+		hex_list = ['#ba1d28', '#ce352c', '#df4b33', '#ee613d', '#f67b49', '#fa9657', '#fdaf67', '#fec87a', '#fee090']
 		
 		pcm = ax[a,b].imshow(masked_array, cmap=get_continuous_cmap(hex_list), vmin = allz[my_keys[0]], vmax = -1, aspect='auto')
 		ax[a,b].imshow(masked_array2, cmap=cmap2, vmin = 1, vmax = 300, aspect='auto')
@@ -741,7 +710,7 @@ def generateBrainVisual(maskfile, allz, fname):
 		ax[a,b].set_xticks([])
 		ax[a,b].set_yticks([])
 
-	fig.colorbar(pcm, ax=ax[:, :], shrink=0.6, location='bottom')
+	fig.colorbar(pcm, ax=ax[:, :], location='right').set_label('Z-score map', labelpad=15, rotation=270)
 
 	#fig.subplots_adjust(wspace=0, hspace=0)
 	#fig.subplots_adjust(wspace=0, hspace=0, left=0, right=1, bottom=0, top=1)
@@ -805,6 +774,7 @@ def _main(bmask, roi, icv , _json, pdf_path):
 	##### Path where we'll save the brain structure images to be displayed
 	## Read icv, if provided
 	icvVol = None
+	dfSub['ICV'] = None
 	if len(icv) == 1:
 		icvVol = calcMaskVolume(icv[0])
 		dfSub['ICV'] = icvVol
@@ -816,33 +786,40 @@ def _main(bmask, roi, icv , _json, pdf_path):
 	roiVols = None
 	allz = None
 	spareAD = None
+	spareBA = None
+
 	if len(roi) == 1:
 		roiVols, dfRef, allz, allz_num, all_MuseROIs_num, all_MuseROIs_name = calcRoiVolumes(roi[0], MUSE_ROI_Mapping, dfRef, subDict)
 		generateBrainVisual(roi[0], allz_num, tmpOut_brainplt)
 		spareAD, prediction = calculateSpareAD(subDict['Age'],subDict['Sex'],all_MuseROIs_num)
+		spareBA = calculateSpareBA(subDict['Age'],subDict['Sex'],all_MuseROIs_num)
+
 		for key in roiVols.keys():
 			dfSub.loc[0, key] = roiVols[key]
 
 	##########################################################################
 	##########################################################################
-	##### TO DO (03/22/2022): ICV correct subject MUSE values (only if ICV mask is provided	
+	dfRef.rename(columns={'702':'ICV'}, inplace=True)
+	##### TO DO (03/22/2022): ICV correct subject MUSE values (only if ICV mask is provided)
 	## ICV-adjustment for subject values
 	nonROI = list(dfSub.columns[dfSub.columns.str.contains('AI')].values)
 	nonROI.extend(['MRID','Age','Sex','ICV'])
-	dfSub[dfSub.columns.difference(nonROI)] = dfSub[dfSub.columns.difference(nonROI)].div(dfSub['ICV'], axis=0)*dfSub['ICV'].mean()
+
+
+	if dfSub['ICV'] is not None:
+		dfSub[dfSub.columns.difference(nonROI)] = dfSub[dfSub.columns.difference(nonROI)].div(dfSub['ICV'], axis=0)*dfRef['ICV'].mean()
 
 	# Convert from mm^3 to cm^3
 	dfSub[dfSub.columns.difference(nonROI)] = dfSub[dfSub.columns.difference(nonROI)]/1000
 
-
 	#### ICV-adjustment for reference values ####
 	nonROI = list(dfRef.columns[dfRef.columns.str.contains('AI')].values)
-	nonROI.extend(['MRID','Study','PTID','Age','Sex','Diagnosis_nearest_2.0','SITE','Date','ICV','SPARE_AD'])
-	dfRef.rename(columns={'702':'ICV'}, inplace=True)
+	nonROI.extend(['MRID','Study','PTID','Age','Sex','Diagnosis_nearest_2.0','SITE','Date','ICV','SPARE_AD','SPARE_BA'])
 
 	# Select subjects with the same sex
 	dfRef = dfRef[dfRef.Sex == subDict['Sex']]
-	# Make copy
+
+	# Make copy for reference value plotting
 	dfReftmp = dfRef.copy(deep=True)
 
 	dfRef['Age'] = dfRef['Age'].round(0)
@@ -850,6 +827,8 @@ def _main(bmask, roi, icv , _json, pdf_path):
 
 	# Actually do the ICV-adjustment
 	dfRef[dfRef.columns.difference(nonROI)] = dfRef[dfRef.columns.difference(nonROI)].div(dfRef['ICV'], axis=0)*dfRef['ICV'].mean()
+
+	# TODO: Should I be ICV-adjusting for only +- 5 years?
 	dfReftmp[dfReftmp.columns.difference(nonROI)] = dfReftmp[dfReftmp.columns.difference(nonROI)].div(dfReftmp['ICV'], axis=0)*dfReftmp['ICV'].mean()
 
 	# Convert from mm^3 to cm^3
@@ -863,7 +842,6 @@ def _main(bmask, roi, icv , _json, pdf_path):
 	imgs = []
 	tables = []
 	trial_set = []
-	pNo = 1	
 
 	## Setup dataframe to store numeric details on ROIs
 	tmpTable = pd.DataFrame(columns=["Brain Region", "Volume (cubic mL)", "R", "R-Z score", "L", "L-Z score", "Asymmetry Index (AI)", "AI-Z score"])#, "Total normative percentile"])
@@ -900,7 +878,7 @@ def _main(bmask, roi, icv , _json, pdf_path):
 
 	tmpOut = '/tmpfolder/' + _os.path.basename(pdf_path.removesuffix(".pdf") + '_plot.png')
 
-	plotWithRef(dfReftmp, dfSub, trial_set, tmpOut, spareAD)
+	plotWithRef(dfReftmp, dfSub, trial_set, tmpOut, spareAD, spareBA)
 
 	plots.append(_os.path.basename(tmpOut))
 	brainplot.append(_os.path.basename(tmpOut_brainplt))
